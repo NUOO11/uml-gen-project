@@ -9,22 +9,20 @@ st.set_page_config(page_title="NLP to UML Generator", layout="wide")
 
 # 2. 缓存加载模型 (服务器端优化)
 @st.cache_resource
-def load_models():
+def load_resources():
+    # 1. NLTK (这个通常没权限问题，可以保留下载)
     try:
         nltk.data.find('corpora/wordnet.zip')
     except LookupError:
         nltk.download('wordnet')
         nltk.download('omw-1.4')
     
-    try:
-        nlp = spacy.load("en_core_web_sm")
-    except OSError:
-        from spacy.cli import download
-        download("en_core_web_sm")
-        nlp = spacy.load("en_core_web_sm")
+    # 2. Spacy (关键修改：直接加载，不再尝试下载！)
+    # 因为 requirements.txt 已经装好了，这里直接 load 即可
+    import en_core_web_sm
+    nlp = en_core_web_sm.load()
+    
     return nlp
-
-nlp = load_models()
 
 # 3. 核心逻辑类
 class UMLGenerator:
@@ -114,3 +112,4 @@ if btn and text:
             st.image(url)
         except Exception as e:
             st.error(f"Error rendering image: {e}")
+
