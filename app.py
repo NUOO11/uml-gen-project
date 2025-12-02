@@ -6,35 +6,29 @@ from plantuml import PlantUML
 import requests
 import tarfile
 import os
-import shutil
 
 # ==========================================
-# 1. System Config & Resources
+# 1. System Config
 # ==========================================
-st.set_page_config(
-    page_title="NLP to UML Generator",
-    page_icon="🎨",
-    layout="wide"
-)
+st.set_page_config(page_title="NLP to UML Generator", page_icon="🎨", layout="wide")
 
-# Custom CSS to hide default elements and make image larger
+# CSS 优化：让图片居中并自适应大小，隐藏多余的空白
 st.markdown("""
 <style>
     .main .block-container { padding-top: 2rem; }
-    img { max-width: 100%; border: 1px solid #ddd; border-radius: 5px; padding: 10px; box-shadow: 2px 2px 10px rgba(0,0,0,0.1); }
+    .stImage { text-align: center; }
+    img { max-width: 90%; border: 1px solid #e6e6e6; border-radius: 8px; padding: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
 </style>
 """, unsafe_allow_html=True)
 
 @st.cache_resource
 def load_resources():
-    # 1. NLTK
     try:
         nltk.data.find('corpora/wordnet.zip')
     except LookupError:
         nltk.download('wordnet')
         nltk.download('omw-1.4')
 
-    # 2. Spacy Model (Manual Download)
     MODEL_URL = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1.tar.gz"
     EXTRACT_PATH = "./model_data"
     MODEL_PATH = f"{EXTRACT_PATH}/en_core_web_sm-3.7.1/en_core_web_sm/en_core_web_sm-3.7.1"
@@ -46,26 +40,23 @@ def load_resources():
             if response.status_code == 200:
                 with open("model.tar.gz", 'wb') as f: f.write(response.raw.read())
                 with tarfile.open("model.tar.gz", "r:gz") as tar: tar.extractall(path=EXTRACT_PATH)
-            else: st.error("Network error downloading model."); st.stop()
-        except Exception as e: st.error(f"Model init failed: {e}"); st.stop()
+        except: pass # Silent fail, try fallback
     
     try: return spacy.load(MODEL_PATH)
-    except OSError: import en_core_web_sm; return en_core_web_sm.load()
+    except: import en_core_web_sm; return en_core_web_sm.load()
 
-with st.spinner("⚙️ System Initializing..."):
-    nlp = load_resources()
+nlp = load_resources()
 
 # ==========================================
-# 2. Core Logic (Hybrid Extraction)
+# 2. Logic (Hybrid)
 # ==========================================
 class HybridUMLSystem:
     def __init__(self):
         self.classes = {}
         self.relationships = []
-        self.ignored_verbs = {"be", "have", "include", "consist", "contain"}
+        self.ignored_verbs = {"be", "have", "include", "consist", "contain", "involve"}
 
     def check_ontology(self, word):
-        # Phase 4: Semantics
         try:
             synsets = wordnet.synsets(word)
             if not synsets: return True
@@ -73,7 +64,6 @@ class HybridUMLSystem:
         except: return True
 
     def detect_multiplicity(self, token):
-        # Phase 3: Multiplicity
         for child in token.children:
             if child.text.lower() in ["many", "multiple", "list", "set", "all"]: return "1..*"
             if child.tag_ == "NNS": return "0..*"
@@ -84,54 +74,44 @@ class HybridUMLSystem:
         self.relationships = []
         doc = nlp(text)
         
-        # Pass 1: Entities
         for token in doc:
+            # Entities
             if token.pos_ in ["NOUN", "PROPN"] and token.dep_ in ["nsubj", "dobj", "pobj", "nsubjpass"]:
                 if self.check_ontology(token.lemma_):
-                    c_name = token.lemma_.capitalize()
-                    if c_name not in self.classes:
-                        self.classes[c_name] = {'attributes': set(), 'methods': set()}
+                    c = token.lemma_.capitalize()
+                    if c not in self.classes: self.classes[c] = {'attributes': set(), 'methods': set()}
 
-        # Pass 2: Relations
-        for token in doc:
-            # Inheritance
+            # Relations
             if token.lemma_ == "be":
                 subj = [c for c in token.children if c.dep_ == "nsubj"]
                 attr = [c for c in token.children if c.dep_ == "attr"]
                 if subj and attr:
-                    c = subj[0].lemma_.capitalize()
-                    p = attr[0].lemma_.capitalize()
-                    if c in self.classes and p in self.classes:
-                        self.relationships.append((c, "<|--", p, ""))
+                    c, p = subj[0].lemma_.capitalize(), attr[0].lemma_.capitalize()
+                    if c in self.classes and p in self.classes: self.relationships.append((c, "<|--", p, ""))
             
-            # Aggregation / Attributes
             elif token.lemma_ in ["have", "contain", "include"]:
                 owners = [c for c in token.children if c.dep_ == "nsubj"]
                 objs = [c for c in token.children if c.dep_ == "dobj"]
                 if owners and objs:
-                    owner = owners[0].lemma_.capitalize()
+                    o = owners[0].lemma_.capitalize()
                     mult = self.detect_multiplicity(objs[0])
-                    mult_lbl = f'"{mult}"' if mult != "1" else ""
-                    if owner in self.classes:
+                    mlabel = f'"{mult}"' if mult != "1" else ""
+                    if o in self.classes:
                         obj_c = objs[0].lemma_.capitalize()
-                        if obj_c in self.classes:
-                            self.relationships.append((owner, "o--", obj_c, mult_lbl))
-                        else:
-                            self.classes[owner]['attributes'].add(objs[0].text)
+                        if obj_c in self.classes: self.relationships.append((o, "o--", obj_c, mlabel))
+                        else: self.classes[o]['attributes'].add(objs[0].text)
 
-            # Association / Methods
             elif token.pos_ == "VERB" and token.lemma_ not in self.ignored_verbs:
                 subjs = [c for c in token.children if c.dep_ == "nsubj"]
                 if subjs:
-                    s_name = subjs[0].lemma_.capitalize()
-                    if s_name in self.classes:
-                        self.classes[s_name]['methods'].add(token.lemma_)
+                    s = subjs[0].lemma_.capitalize()
+                    if s in self.classes:
+                        self.classes[s]['methods'].add(token.lemma_)
                         dobjs = [c for c in token.children if c.dep_ == "dobj"]
                         if dobjs:
-                            o_name = dobjs[0].lemma_.capitalize()
-                            if o_name in self.classes and s_name != o_name:
-                                self.relationships.append((s_name, "-->", o_name, f": {token.lemma_}"))
-            
+                            o = dobjs[0].lemma_.capitalize()
+                            if o in self.classes and s != o: self.relationships.append((s, "-->", o, f": {token.lemma_}"))
+
             # Passive Voice
             if token.dep_ == "agent" and token.head.pos_ == "VERB":
                 actual = [c for c in token.children if c.dep_ == "pobj"]
@@ -148,7 +128,7 @@ class HybridUMLSystem:
         return self.generate_plantuml()
 
     def generate_plantuml(self):
-        lines = ["@startuml", "skinparam classAttributeIconSize 0", "hide circle", "skinparam shadowing false", "skinparam ranksep 100", "skinparam nodesep 100"]
+        lines = ["@startuml", "skinparam classAttributeIconSize 0", "hide circle", "skinparam shadowing false", "skinparam ranksep 80", "skinparam nodesep 80", "skinparam linetype ortho"]
         for c, d in self.classes.items():
             lines.append(f"class {c} {{")
             for a in d['attributes']: lines.append(f"  - {a}")
@@ -163,56 +143,51 @@ class HybridUMLSystem:
 system = HybridUMLSystem()
 
 # ==========================================
-# 3. User Interface (Clean & Visual)
+# 3. UI (Robust Image Rendering)
 # ==========================================
-
 st.title("🎓 Intelligent UML Generator")
-st.markdown("Enter your requirements below, and the system will instantly generate the Class Diagram.")
 
-# Sidebar: Evaluation (Phase 6)
+# Sidebar
 with st.sidebar:
     st.header("📊 Phase 6: Evaluation")
-    st.info("Validation against Ground Truth.")
-    gt_input = st.text_area("Expected Classes:", value="BankSystem, Customer, Account, Administrator")
-    if st.button("Run Evaluation"):
-        if not system.classes: st.warning("Generate a diagram first.")
+    gt = st.text_area("Expected Classes:", "BankSystem, Customer, Account, Administrator")
+    if st.button("Evaluate"):
+        if not system.classes: st.warning("Generate first.")
         else:
-            exp = set([x.strip() for x in gt_input.split(",") if x.strip()])
+            exp = set([x.strip() for x in gt.split(",") if x.strip()])
             det = set(system.classes.keys())
             tp = len(exp.intersection(det))
             fp = len(det - exp); fn = len(exp - det)
-            p = tp/(tp+fp) if (tp+fp) > 0 else 0
-            r = tp/(tp+fn) if (tp+fn) > 0 else 0
-            f1 = 2*(p*r)/(p+r) if (p+r) > 0 else 0
+            p = tp/(tp+fp) if (tp+fp)>0 else 0
+            r = tp/(tp+fn) if (tp+fn)>0 else 0
+            f1 = 2*(p*r)/(p+r) if (p+r)>0 else 0
             st.metric("F1-Score", f"{f1:.2f}")
             st.metric("Precision", f"{p:.2f}")
-            st.metric("Recall", f"{r:.2f}")
 
-# Main Layout
-input_text = st.text_area("Requirement Specification:", height=150, 
-                          value="The BankSystem allows a Customer to open an Account.\nThe Account is managed by the Administrator.\nThe Customer places many Orders.")
+# Main
+txt = st.text_area("Requirements:", "The BankSystem allows a Customer to open an Account.\nThe Account is managed by the Administrator.", height=150)
 
 if st.button("Generate Diagram", type="primary"):
-    with st.spinner("Analyzing text and rendering diagram..."):
-        # 1. Processing
-        uml_code = system.process(input_text)
+    with st.spinner("Processing..."):
+        uml_code = system.process(txt)
         
-        # 2. Visualization (Center Stage)
+        # --- 关键修改：直接生成 URL，使用 Markdown 渲染 (Browser-Side Rendering) ---
         try:
-            # 使用 HTTPS 确保图片加载
-            server = PlantUML(url='https://www.plantuml.com/plantuml/img/')
-            image_url = server.get_url(uml_code)
+            # 使用 SVG 格式，清晰度更高，且使用 HTTPS
+            plantuml_server = PlantUML(url='https://www.plantuml.com/plantuml/svg/')
+            image_url = plantuml_server.get_url(uml_code)
             
-            st.success("✅ Diagram Generated Successfully!")
-            st.image(image_url, caption="Generated UML Class Diagram", use_container_width=True)
+            st.success("✅ Generation Complete!")
             
-            # 提供下载链接
-            st.markdown(f"[📥 **Download Image**]({image_url})")
+            # 使用 Markdown 语法显示图片
+            # 这种方式由你的浏览器直接加载图片，绕过 Streamlit 服务器
+            st.markdown(f'<div style="text-align: center;"><img src="{image_url}" alt="UML Diagram" width="100%"></div>', unsafe_allow_html=True)
+            
+            st.markdown(f"**[🔗 Click to Open High-Res Image]({image_url})**")
             
         except Exception as e:
-            st.error("Visualization Service is busy.")
-            st.markdown(f"[Click here to view image]({image_url})")
+            st.error(f"Error generating URL: {e}")
         
-        # 3. Hidden Debug Info
-        with st.expander("🛠️ Debug: View PlantUML Code"):
+        # 调试代码（默认折叠）
+        with st.expander("🛠️ View PlantUML Code"):
             st.code(uml_code, language='java')
