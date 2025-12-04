@@ -153,7 +153,7 @@ st.title("🎓 Intelligent UML Generator")
 
 # --- Sidebar: Evaluation ---
 with st.sidebar:
-    st.header("📊 Phase 6: Evaluation")
+    st.header(" Evaluation")
     gt = st.text_area("Expected Classes:", "BankSystem, Customer, Account, Administrator")
     
     if st.button("Run Evaluation"):
@@ -223,3 +223,4 @@ if st.session_state['uml_code']:
             
     except Exception as e:
         st.error(f"Render Error: {e}")
+
